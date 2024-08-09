@@ -1,10 +1,12 @@
-use std::{error::Error, fmt::Display};
+use std::{
+    error::Error, fmt::Display, iter::Sum, ops::{Add, Div}
+};
 
 use anyhow::Result;
 use font_kit::{family_name::FamilyName, handle::Handle, properties::Properties};
 use fontdue::{Font, FontSettings};
 use image::GenericImageView;
-use image_to_ascii::CharacterSet;
+use image_to_ascii::{rgb_to_ansi256, CharacterSet};
 
 #[derive(Debug)]
 struct FontLoadError;
@@ -35,15 +37,51 @@ fn discover_monospace() -> Result<Font> {
     Ok(font)
 }
 
+struct Rgb(f32, f32, f32);
+impl Rgb {
+    pub fn from_rbg8(r: u8, g: u8, b: u8) -> Self {
+        Self(r as f32, g as f32, b as f32)
+    }
+    pub fn brightness(&self) -> f32 {
+        (self.0 + self.1 + self.2) / 3.0 / 255.0
+    }
+    pub fn to_rgb8(&self) -> (u8, u8, u8) {
+        (
+            self.0.clamp(0.0, 255.0) as u8,
+            self.1.clamp(0.0, 255.0) as u8,
+            self.2.clamp(0.0, 255.0) as u8,
+        )
+    }
+}
+impl Sum for Rgb {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self(0.0, 0.0, 0.0), |acc, x| acc + x)
+    }
+}
+impl Add for Rgb {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0, self.1 + other.1, self.2 + other.2)
+    }
+}
+impl Div<f32> for Rgb {
+    type Output = Self;
+
+    fn div(self, rhs: f32) -> Self {
+        Self(self.0 / rhs, self.1 / rhs, self.2 / rhs)
+    }
+}
+
 fn main() {
     let font = discover_monospace().unwrap();
     // println!("{}", average_brightness('@', &font));
     // let charset: String = " ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔▕▖▗▘▙▚▛▜▝▞▟🬀🬁🬂🬃🬄🬅🬆🬇🬈🬉🬊🬋🬌🬍🬎🬏🬐🬑🬒🬓🬔🬕🬖🬗🬘🬙🬚🬛🬜🬝🬞🬟🬠🬡🬢🬣🬤🬥🬦🬧🬨🬩🬪🬫🬬🬭🬮🬯🬰🬱🬲🬳🬴🬵🬶🬷🬸🬹🬺🬻🬼🬽🬾🬿🭀🭁🭂🭃🭄🭅🭆🭇🭈🭉🭊🭋🭌🭍🭎🭏🭐🭑🭒🭓🭔🭕🭖🭗🭘🭙🭚🭛🭜🭝🭞🭟🭠🭡🭢🭣🭤🭥🭦🭧🭨🭩🭪🭫🭬🭭🭮🭯🮐🮑🮒	🮔🮕🮖🮗🮘🮙🮚🮛🮜🮝🮞🮟🮀🮁🮂🮃🮄🮅🮆🮇🮈🮉🮊🮋🮌🮍🮎🮏🮰🮱🮲🮳🮴🮵🮶🮷🮸🮹🮺🮻🮼🮽🮾🮿🯀🯁🯂🯃🯄🯅🯆🯇🯈🯉🯊🯰🯱🯲🯳🯴🯵🯶🯷🯸🯹".to_string();
-    
+
     let image_bytes = include_bytes!("./test.png");
     let image = image::load_from_memory(image_bytes).unwrap();
-    
-    let desired_width = 14;
+
+    let desired_width = 50;
     let charset = " ░▒▓█";
     // let charset = "!@#$%^&*()1234567890 ";
     let charset = CharacterSet::from_string(charset, font);
@@ -62,7 +100,7 @@ fn main() {
         image::imageops::FilterType::CatmullRom,
     );
 
-    let image = image.to_luma16();
+    let image = image.to_rgb8();
 
     let mut left = 0;
     let mut top = 0;
@@ -75,17 +113,19 @@ fn main() {
                 horizontal_chunk_size.min(image.width() - left),
                 vertical_chunk_size.min(image.height() - top),
             );
-            let mut brightness = chunk
+            let avg_color = chunk
                 .pixels()
-                .map(|p| p.2 .0[0] as f32 / 65535.0)
-                .sum::<f32>()
+                .map(|p| {
+                    Rgb::from_rbg8(p.2.0[0], p.2.0[1], p.2.0[2])
+                })
+                .sum::<Rgb>()
                 / (chunk.width() * chunk.height()) as f32;
-
+            let mut brightness = avg_color.brightness();
             let width = brightness_range.end - brightness_range.start;
             brightness *= width;
             brightness += brightness_range.start;
 
-            chars.push(charset.nearest_brightness(brightness).unwrap_or(' '));
+            chars.push((charset.nearest_brightness(brightness).unwrap_or(' '), avg_color.to_rgb8()));
             left += horizontal_chunk_size;
         }
         top += vertical_chunk_size;
@@ -93,8 +133,10 @@ fn main() {
     }
 
     for row in chars.chunks(image.width() as usize / horizontal_chunk_size as usize) {
-        for c in row {
-            print!("{c}");
+        for (c, color) in row {
+            let escape_rgb = rgb_to_ansi256(color.0, color.1, color.2);
+            let escape_code = format!("\x1b[38;5;{escape_rgb}m\x1b[38;2;{};{};{}m", color.0, color.1, color.2);
+            print!("{escape_code}{c}\x1b[0m");
         }
         println!();
     }

@@ -72,3 +72,23 @@ pub fn average_brightness(glyph: char, font: &Font) -> f32 {
         .sum::<f32>()
         / (image.width() * image.height()) as f32
 }
+
+pub fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    // we use the extended greyscale palette here, with the exception of
+    // black and white. normal palette only has 4 greyscale shades.
+    if r == g && g == b {
+        if r < 8 {
+            return 16;
+        }
+
+        if r > 248 {
+            return 231;
+        }
+
+        return (((r as f32 - 8.0) / 247.0) * 24.0).round() as u8 + 232;
+    }
+
+    16 + (36 * (r as f32 / 255.0 * 5.0).round() as u8)
+        + (6 * (g as f32 / 255.0 * 5.0).round() as u8)
+        + (b as f32 / 255.0 * 5.0).round() as u8
+}
