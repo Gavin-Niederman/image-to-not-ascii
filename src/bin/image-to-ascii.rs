@@ -37,13 +37,16 @@ fn discover_monospace() -> Result<Font> {
     Ok(font)
 }
 
-struct Rgb(f32, f32, f32);
-impl Rgb {
-    pub fn from_rbg8(r: u8, g: u8, b: u8) -> Self {
-        Self(r as f32, g as f32, b as f32)
+struct Rgba(f32, f32, f32, f32);
+impl Rgba {
+    pub fn from_rbga8(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self(r as f32, g as f32, b as f32, a as f32)
     }
     pub fn brightness(&self) -> f32 {
         (self.0 + self.1 + self.2) / 3.0 / 255.0
+    }
+    pub fn alpha(&self) -> f32 {
+        self.3 / 255.0
     }
     pub fn to_rgb8(&self) -> (u8, u8, u8) {
         (
@@ -53,23 +56,23 @@ impl Rgb {
         )
     }
 }
-impl Sum for Rgb {
+impl Sum for Rgba {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self(0.0, 0.0, 0.0), |acc, x| acc + x)
+        iter.fold(Self(0.0, 0.0, 0.0, 0.0), |acc, x| acc + x)
     }
 }
-impl Add for Rgb {
+impl Add for Rgba {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        Self(self.0 + other.0, self.1 + other.1, self.2 + other.2)
+        Self(self.0 + other.0, self.1 + other.1, self.2 + other.2, self.3 + other.3)
     }
 }
-impl Div<f32> for Rgb {
+impl Div<f32> for Rgba {
     type Output = Self;
 
     fn div(self, rhs: f32) -> Self {
-        Self(self.0 / rhs, self.1 / rhs, self.2 / rhs)
+        Self(self.0 / rhs, self.1 / rhs, self.2 / rhs, self.3 / rhs)
     }
 }
 
@@ -81,7 +84,9 @@ fn main() {
     let image_bytes = include_bytes!("./test.png");
     let image = image::load_from_memory(image_bytes).unwrap();
 
-    let desired_width = 50;
+    let colored = true;
+
+    let desired_width = 40;
     let charset = " ░▒▓█";
     // let charset = "!@#$%^&*()1234567890 ";
     let charset = CharacterSet::from_string(charset, font);
@@ -100,7 +105,7 @@ fn main() {
         image::imageops::FilterType::CatmullRom,
     );
 
-    let image = image.to_rgb8();
+    let image = image.to_rgba8();
 
     let mut left = 0;
     let mut top = 0;
@@ -116,16 +121,16 @@ fn main() {
             let avg_color = chunk
                 .pixels()
                 .map(|p| {
-                    Rgb::from_rbg8(p.2.0[0], p.2.0[1], p.2.0[2])
+                    Rgba::from_rbga8(p.2.0[0], p.2.0[1], p.2.0[2], p.2.0[3])
                 })
-                .sum::<Rgb>()
+                .sum::<Rgba>()
                 / (chunk.width() * chunk.height()) as f32;
-            let mut brightness = avg_color.brightness();
+            let mut alpha =  if colored { avg_color.alpha() } else { avg_color.brightness()};
             let width = brightness_range.end - brightness_range.start;
-            brightness *= width;
-            brightness += brightness_range.start;
+            alpha *= width;
+            alpha += brightness_range.start;
 
-            chars.push((charset.nearest_brightness(brightness).unwrap_or(' '), avg_color.to_rgb8()));
+            chars.push((charset.nearest_brightness(alpha).unwrap_or(' '), avg_color.to_rgb8()));
             left += horizontal_chunk_size;
         }
         top += vertical_chunk_size;
@@ -133,11 +138,19 @@ fn main() {
     }
 
     for row in chars.chunks(image.width() as usize / horizontal_chunk_size as usize) {
-        for (c, color) in row {
+        for (i, (c, color)) in row.iter().enumerate() {
             let escape_rgb = rgb_to_ansi256(color.0, color.1, color.2);
             let escape_code = format!("\x1b[38;5;{escape_rgb}m\x1b[38;2;{};{};{}m", color.0, color.1, color.2);
-            print!("{escape_code}{c}\x1b[0m");
+            if let Some((_, last_color)) = row.get(i.saturating_sub(1)) {
+                if last_color != color || i == 0 && *c != ' ' {
+                    print!("{escape_code}{c}")
+                } else {
+                    print!("{c}");
+                }
+            } else {
+                print!("{escape_code}{c}")
+            }
         }
-        println!();
+        println!("\x1b[0m");
     }
 }
